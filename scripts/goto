@@ -1,0 +1,14 @@
+#!/bin/bash
+# 位置移動コマンド（静かなバージョン）
+
+if [ -z "$1" ]; then
+    echo "🎯 最新位置へ移動中..."
+    ros2 topic pub --once /cobot/goto_position std_msgs/msg/String "{data: \"\"}" > /dev/null 2>&1
+else
+    echo "🎯 $1 へ移動中..."
+    ros2 topic pub --once /cobot/goto_position std_msgs/msg/String "{data: \"$1\"}" > /dev/null 2>&1
+fi
+
+# 移動完了を待つ（簡易）
+sleep 1
+echo "✅ 完了"

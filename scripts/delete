@@ -1,0 +1,8 @@
+#!/bin/bash
+# 最新位置削除（静かなバージョン）
+ros2 service call /cobot/delete std_srvs/srv/Empty > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "🗑️ 最新位置削除完了"
+else
+    echo "❌ 削除失敗"
+fi

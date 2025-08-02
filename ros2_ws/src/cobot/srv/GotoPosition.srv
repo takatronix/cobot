@@ -1,0 +1,7 @@
+# Goto Position Service
+# 位置名を指定して移動（空文字列なら最新位置）
+
+string position_name
+---
+bool success
+string message
