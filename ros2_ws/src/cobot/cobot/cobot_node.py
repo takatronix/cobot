@@ -59,7 +59,7 @@ class SafetyChecker:
     def __init__(self):
         # myCobot280の関節制限 (度) - 実機エラーメッセージより修正
         self.joint_limits = [
-            (-180, 180),  # J1: ±3.14159 rad = ±180°
+            (-168, 168),  # J1: 実機制限 -168°~168° (PyMyCobotエラーより)
             (-135, 135),  # J2: 実機制限 -135°~135° (PyMyCobotエラーより)
             (-135, 135),  # J3: ±2.3562 rad = ±135°
             (-150, 150),  # J4: ±2.618 rad = ±150°
@@ -185,8 +185,18 @@ class PositionManager:
         return True
     
     def list_positions(self):
-        """位置リスト取得"""
-        return list(self.positions.keys())
+        """位置リスト取得（実際のファイルから）"""
+        try:
+            if not os.path.exists(self.positions_dir):
+                return []
+            
+            # .jsonファイルのみをリスト
+            files = [f[:-5] for f in os.listdir(self.positions_dir) 
+                    if f.endswith('.json')]
+            return sorted(files)
+        except Exception as e:
+            logger.error(f"❌ Failed to list positions: {e}")
+            return []
     
     def delete_position(self, name):
         """位置削除"""
