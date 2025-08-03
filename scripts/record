@@ -1,0 +1,9 @@
+#!/bin/bash
+# 🎬 Motion recording (simple)
+if [ -z "$1" ]; then
+    echo "使用法: ./record <motion_name>"
+    echo "例: ./record pick_up"
+    exit 1
+fi
+echo "🎬 記録開始: $1"
+ros2 topic pub --once /cobot/record std_msgs/msg/String "data: '$1'" > /dev/null

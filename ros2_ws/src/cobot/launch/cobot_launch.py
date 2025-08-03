@@ -54,7 +54,7 @@ def generate_launch_description():
     
     rviz_arg = DeclareLaunchArgument(
         'rviz',
-        default_value='false',
+        default_value='true',
         description='Launch RViz2'
     )
     
@@ -101,7 +101,7 @@ def generate_launch_description():
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', os.path.join(pkg_dir, 'config', 'cobot.rviz')],
+        arguments=['-d', os.path.join(pkg_dir, 'config', 'cobot_simple.rviz')],
         condition=IfCondition(LaunchConfiguration('rviz'))
     )
     

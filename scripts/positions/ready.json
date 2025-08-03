@@ -1,0 +1,14 @@
+{
+  "name": "ready",
+  "angles": [
+    0,
+    -20,
+    -40,
+    0,
+    -20,
+    0
+  ],
+  "description": "Ready position",
+  "gripper_value": null,
+  "created_at": "Sat Aug  2 17:12:30 2025"
+}

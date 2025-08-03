@@ -1,0 +1,31 @@
+#!/bin/bash
+# cobot_node安全停止スクリプト
+
+echo "🛑 cobot_node停止中..."
+
+# cobot_nodeプロセス確認
+if pgrep -f "cobot_node" > /dev/null; then
+    echo "📋 停止対象プロセス:"
+    ps aux | grep cobot_node | grep -v grep
+    
+    echo "⏹️ 通常停止実行中..."
+    pkill -f cobot_node
+    sleep 3
+    
+    # まだ動いている場合は強制停止
+    if pgrep -f "cobot_node" > /dev/null; then
+        echo "🔥 強制停止実行中..."
+        pkill -9 -f cobot_node
+        sleep 2
+    fi
+    
+    # 停止確認
+    if pgrep -f "cobot_node" > /dev/null; then
+        echo "❌ 停止に失敗しました"
+        ps aux | grep cobot_node | grep -v grep
+    else
+        echo "✅ cobot_node停止完了"
+    fi
+else
+    echo "ℹ️ cobot_nodeは動作していません"
+fi

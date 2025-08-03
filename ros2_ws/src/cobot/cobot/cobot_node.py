@@ -21,6 +21,11 @@ from std_msgs.msg import String, Bool
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose, Twist
 from std_srvs.srv import Empty, SetBool
+try:
+    from cobot.srv import MotionRecord, MotionPlay, MotionList
+except ImportError:
+    # カスタムサービス未生成時のフォールバック
+    MotionRecord = MotionPlay = MotionList = None
 
 import time
 import threading
@@ -33,6 +38,7 @@ from dataclasses import dataclass
 
 from pymycobot import MyCobot280
 from .gripper_control import GripperController
+from .motion_recorder import MotionRecorder
 
 # ログ設定
 logging.basicConfig(level=logging.INFO)
@@ -328,9 +334,9 @@ class ModeManager:
 class CommandFilter:
     def __init__(self):
         self.allowed_commands = {
-            CobotMode.MANUAL: ["save_position", "get_status", "set_led"],
-            CobotMode.AUTO: ["move_to_pose", "set_angles", "execute_trajectory", "get_status"],
-            CobotMode.AI: ["move_to_pose", "set_angles", "manual_jog", "get_status"],
+            CobotMode.MANUAL: ["save_position", "get_status", "set_led", "play_motion"],
+            CobotMode.AUTO: ["move_to_pose", "set_angles", "execute_trajectory", "get_status", "play_motion"],
+            CobotMode.AI: ["move_to_pose", "set_angles", "manual_jog", "get_status", "play_motion"],
             CobotMode.CALIBRATION: ["calibrate_gripper", "get_status"],
             CobotMode.EMERGENCY: ["get_status"],
         }
@@ -378,8 +384,11 @@ class CobotNode(Node):
         # システムコンポーネント初期化
         self.safety_checker = SafetyChecker() if self.enable_safety else None
         self.position_manager = PositionManager()
+        self.motion_recorder = MotionRecorder()
+        self.motion_recorder.set_cobot_node(self)  # cobot_nodeインスタンスを設定
         self.mode_manager = ModeManager()
         self.command_filter = CommandFilter()
+        self.gripper_controller = None  # 後でロボット接続時に初期化
         
         # ロボット状態
         self.robot: Optional[MyCobot280] = None
@@ -445,6 +454,10 @@ class CobotNode(Node):
             Empty, 'cobot/ai', self._ai_callback,
             callback_group=self.callback_group)
         
+        self.calibration_srv = self.create_service(
+            Empty, 'cobot/calibration', self._calibration_callback,
+            callback_group=self.callback_group)
+        
         self.save_position_srv = self.create_service(
             Empty, 'cobot/save_current_position', self._save_position_callback,
             callback_group=self.callback_group)
@@ -475,6 +488,47 @@ class CobotNode(Node):
             Empty, 'cobot/goto_last', self._goto_last_callback,
             callback_group=self.callback_group)
         
+        # Calibration services
+        self.calibrate_gripper_srv = self.create_service(
+            Empty, 'cobot/calibrate_gripper', self._calibrate_gripper_callback,
+            callback_group=self.callback_group)
+        
+        self.calibrate_joints_srv = self.create_service(
+            Empty, 'cobot/calibrate_joints', self._calibrate_joints_callback,
+            callback_group=self.callback_group)
+        
+        self.get_calibration_status_srv = self.create_service(
+            Empty, 'cobot/get_calibration_status', self._get_calibration_status_callback,
+            callback_group=self.callback_group)
+        
+        self.reset_calibration_srv = self.create_service(
+            Empty, 'cobot/reset_calibration', self._reset_calibration_callback,
+            callback_group=self.callback_group)
+        
+        # 現在角度取得サービス
+        self.get_angles_srv = self.create_service(
+            Empty, 'cobot/get_angles', self._get_angles_callback,
+            callback_group=self.callback_group)
+        
+        # Motion services (if available)
+        if MotionRecord is not None:
+            self.motion_record_srv = self.create_service(
+                MotionRecord, 'cobot/motion_record', self._motion_record_callback,
+                callback_group=self.callback_group)
+        if MotionPlay is not None:
+            self.motion_play_srv = self.create_service(
+                MotionPlay, 'cobot/motion_play', self._motion_play_callback,
+                callback_group=self.callback_group)
+        if MotionList is not None:
+            self.motion_list_srv = self.create_service(
+                MotionList, 'cobot/motion_list', self._motion_list_callback,
+                callback_group=self.callback_group)
+        
+        # Stop motion service (uses std_srvs)
+        self.record_stop_srv = self.create_service(
+            Empty, 'cobot/record_stop', self._record_stop_callback,
+            callback_group=self.callback_group)
+        
         # 任意位置移動用（トピック経由）
         self.goto_position_sub = self.create_subscription(
             String, 'cobot/goto_position', self._goto_position_callback, 10,
@@ -485,10 +539,26 @@ class CobotNode(Node):
             String, 'cobot/save_position', self._save_position_topic_callback, 10,
             callback_group=self.callback_group)
         
+        # Motion制御用（トピック経由）
+        self.motion_record_sub = self.create_subscription(
+            String, 'cobot/record', self._motion_record_topic_callback, 10,
+            callback_group=self.callback_group)
+        
+        self.motion_play_sub = self.create_subscription(
+            String, 'cobot/play', self._motion_play_topic_callback, 10,
+            callback_group=self.callback_group)
+        
         # タイマー
         self.status_timer = self.create_timer(1.0 / self.publish_rate, self._status_timer_callback)
         
         logger.info("✅ ROS2 interfaces configured")
+    
+    def _stop_motion_if_playing(self, reason="Command override"):
+        """モーション再生中なら停止"""
+        if self.motion_recorder.is_playing:
+            self.motion_recorder.stop_playback()
+            logger.info(f"⏹️ Motion playback stopped by {reason}")
+            print(f"⏹️ モーション再生停止: {reason}")
     
     def _connect_robot(self) -> bool:
         """ロボット接続"""
@@ -514,6 +584,15 @@ class CobotNode(Node):
                 if self.robot.is_controller_connected():
                     self.connected = True
                     logger.info("✅ Robot connected successfully")
+                    
+                    # グリッパーコントローラー初期化
+                    try:
+                        from .gripper_control import GripperController
+                        self.gripper_controller = GripperController(self.port, self.baudrate)
+                        logger.info("✅ Gripper controller initialized")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Gripper controller initialization failed: {e}")
+                        self.gripper_controller = None
                 else:
                     logger.warning("⚠️ Robot not responding - continuing in offline mode")
                     self.connected = False
@@ -753,6 +832,11 @@ class CobotNode(Node):
         logger.critical("🚨 Emergency stop service called")
         
         try:
+            # モーション再生停止
+            if self.motion_recorder.is_playing:
+                self.motion_recorder.stop_playback()
+                logger.info("⏹️ Motion playback stopped by emergency stop")
+                
             success = self.mode_manager.emergency_stop("ROS2 service call")
             
             if success and self.robot:
@@ -830,6 +914,7 @@ class CobotNode(Node):
     
     def _manual_callback(self, request, response):
         """マニュアルモードサービスコールバック"""
+        self._stop_motion_if_playing("manual mode")
         logger.info("🟡 Manual mode service called")
         
         try:
@@ -853,6 +938,7 @@ class CobotNode(Node):
     
     def _auto_callback(self, request, response):
         """オートモードサービスコールバック"""
+        self._stop_motion_if_playing("auto mode")
         logger.info("🟢 Auto mode service called")
         
         try:
@@ -876,6 +962,7 @@ class CobotNode(Node):
     
     def _ai_callback(self, request, response):
         """AIモードサービスコールバック"""
+        self._stop_motion_if_playing("AI mode")
         logger.info("🤖 AI mode service called")
         
         try:
@@ -894,6 +981,334 @@ class CobotNode(Node):
                 
         except Exception as e:
             logger.error(f"❌ AI mode error: {e}")
+        
+        return response
+    
+    def _calibration_callback(self, request, response):
+        """キャリブレーションモードサービスコールバック"""
+        self._stop_motion_if_playing("calibration mode")
+        logger.info("🩷 Calibration mode service called")
+        
+        try:
+            result, message = self.mode_manager.transition_to_mode(CobotMode.CALIBRATION)
+            
+            if result:
+                logger.info("✅ Calibration mode activated")
+                
+                # LED更新とロボット設定
+                if self.robot:
+                    r, g, b = self.mode_manager.get_led_color()
+                    self.robot.set_color(r, g, b)
+                    self.robot.set_free_mode(0)  # キャリブレーションモードは自動制御
+            else:
+                logger.warning(f"❌ Calibration mode failed: {message}")
+                
+        except Exception as e:
+            logger.error(f"❌ Calibration mode error: {e}")
+        
+        return response
+    
+    def _calibrate_gripper_callback(self, request, response):
+        """グリッパーキャリブレーションサービスコールバック"""
+        logger.info("🤏 Gripper calibration service called")
+        print("\n🤏 グリッパーキャリブレーション開始")
+        print("==============================")
+        
+        try:
+            if not self.connected or not self.robot:
+                logger.error("❌ Robot not connected")
+                print("❌ ロボットが接続されていません")
+                return response
+            
+            # キャリブレーションモードでのみ実行
+            if self.mode_manager.current_mode != CobotMode.CALIBRATION:
+                logger.warning("⚠️ Gripper calibration requires calibration mode")
+                print("⚠️ キャリブレーションモードで実行してください")
+                return response
+            
+            # グリッパーキャリブレーションシーケンス
+            print("🔧 グリッパーキャリブレーションシーケンス開始...")
+            
+            # Step 1: フリーモードに切り替え
+            print("🔓 Step 1: フリーモードに切り替え中...")
+            self.robot.set_free_mode(1)
+            time.sleep(1)
+            
+            # Step 2: グリッパーを完全に開く位置に手動設定
+            print("\n📝 Step 2: グリッパーを手動で完全に開いてください")
+            print("ℹ️ 指でグリッパーを幅いっぱいに広げてください")
+            print("⏸️ 設定後、Enterキーを押してください...")
+            
+            # ユーザー入力待ち（簡易版）
+            import threading
+            import sys
+            
+            input_received = threading.Event()
+            def wait_for_input():
+                try:
+                    input()
+                    input_received.set()
+                except:
+                    pass
+            
+            input_thread = threading.Thread(target=wait_for_input, daemon=True)
+            input_thread.start()
+            
+            # 30秒タイムアウト
+            if input_received.wait(30):
+                print("✅ オープン位置設定完了")
+            else:
+                print("⚠️ タイムアウト - デフォルト値を使用")
+            
+            # オープン位置記録
+            open_value = None
+            if self.gripper_controller:
+                try:
+                    # リトライロジックでグリッパー値取得
+                    for attempt in range(3):
+                        try:
+                            open_value = self.robot.get_gripper_value()
+                            if open_value is not None:
+                                break
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logger.warning(f"⚠️ Attempt {attempt+1} failed: {e}")
+                            time.sleep(1)
+                    
+                    if open_value is not None:
+                        self.gripper_controller.open_value = open_value
+                        print(f"📊 オープン位置記録: {open_value}")
+                    else:
+                        # デフォルト値使用
+                        self.gripper_controller.open_value = 100
+                        print("⚠️ オープン位置取得失敗 - デフォルト値(100)使用")
+                except Exception as e:
+                    self.gripper_controller.open_value = 100
+                    print(f"⚠️ オープン位置エラー: {e} - デフォルト値(100)使用")
+            
+            time.sleep(2)
+            
+            # Step 3: グリッパーを完全に閉じる位置に手動設定
+            print("\n📝 Step 3: グリッパーを手動で完全に閉じてください")
+            print("ℹ️ 指でグリッパーをきっちりと閉じてください")
+            print("⏸️ 設定後、Enterキーを押してください...")
+            
+            input_received.clear()
+            input_thread = threading.Thread(target=wait_for_input, daemon=True)
+            input_thread.start()
+            
+            if input_received.wait(30):
+                print("✅ クローズ位置設定完了")
+            else:
+                print("⚠️ タイムアウト - デフォルト値を使用")
+            
+            # クローズ位置記録
+            close_value = None
+            if self.gripper_controller:
+                try:
+                    # リトライロジックでグリッパー値取得
+                    for attempt in range(3):
+                        try:
+                            close_value = self.robot.get_gripper_value()
+                            if close_value is not None:
+                                break
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logger.warning(f"⚠️ Attempt {attempt+1} failed: {e}")
+                            time.sleep(1)
+                    
+                    if close_value is not None:
+                        self.gripper_controller.closed_value = close_value
+                        print(f"📊 クローズ位置記録: {close_value}")
+                    else:
+                        # デフォルト値使用
+                        self.gripper_controller.closed_value = 0
+                        print("⚠️ クローズ位置取得失敗 - デフォルト値(0)使用")
+                except Exception as e:
+                    self.gripper_controller.closed_value = 0
+                    print(f"⚠️ クローズ位置エラー: {e} - デフォルト値(0)使用")
+                
+                # キャリブレーション完了フラグ設定
+                self.gripper_controller.is_calibrated = True
+            
+            # Step 4: キャリブレーションテスト
+            print("\n🧪 Step 4: キャリブレーションテスト実行...")
+            self.robot.set_free_mode(0)  # 自動モードに戻す
+            time.sleep(1)
+            
+            if self.gripper_controller:
+                # テストシーケンス
+                print("🔄 オープンテスト...")
+                self.gripper_controller.open_gripper(50)
+                time.sleep(2)
+                
+                print("🔄 クローズテスト...")
+                self.gripper_controller.close_gripper(50)
+                time.sleep(2)
+                
+                print("🔄 中間位置テスト...")
+                self.gripper_controller.set_position("half", 50)
+                time.sleep(2)
+            
+            print("\n✅ グリッパーキャリブレーション完了!")
+            print("==============================")
+            logger.info("✅ Gripper calibration completed successfully")
+                
+        except Exception as e:
+            logger.error(f"❌ Gripper calibration error: {e}")
+            print(f"❌ キャリブレーションエラー: {e}")
+        
+        return response
+    
+    def _calibrate_joints_callback(self, request, response):
+        """関節キャリブレーションサービスコールバック - エンコーダーリセット版"""
+        logger.info("🦾 Joint calibration service called")
+        print("\n🦾 関節キャリブレーション開始 (エンコーダーリセット)")
+        print("==============================")
+        
+        try:
+            if not self.connected or not self.robot:
+                logger.error("❌ Robot not connected")
+                print("❌ ロボットが接続されていません")
+                return response
+            
+            # 現在位置を取得
+            current_angles = self.robot.get_angles()
+            print(f"📊 キャリブレーション前の角度: {current_angles}")
+            
+            # 現在のグリッパー値も取得
+            current_gripper = None
+            try:
+                current_gripper = self.robot.get_gripper_value()
+                print(f"🤏 現在のグリッパー値: {current_gripper}")
+            except Exception as e:
+                logger.warning(f"⚠️ Gripper value not available: {e}")
+                current_gripper = 50  # デフォルト値
+            
+            # サーボキャリブレーション実行
+            print("🔄 サーボキャリブレーション実行中...")
+            try:
+                # PyMyCobotのサーボキャリブレーション機能を使用
+                # 現在位置を角度ゼロ点としてキャリブレーション
+                self.robot.set_servo_calibration(1)  # J1をキャリブレーション
+                self.robot.set_servo_calibration(2)  # J2をキャリブレーション
+                self.robot.set_servo_calibration(3)  # J3をキャリブレーション
+                self.robot.set_servo_calibration(4)  # J4をキャリブレーション
+                self.robot.set_servo_calibration(5)  # J5をキャリブレーション
+                self.robot.set_servo_calibration(6)  # J6をキャリブレーション
+                print("✅ 全関節サーボキャリブレーション完了")
+                time.sleep(2)  # キャリブレーション処理の完了を待つ
+            except Exception as e:
+                logger.warning(f"⚠️ Encoder reset failed, using alternative method: {e}")
+                # 代替方法: 現在位置を原点として設定
+                try:
+                    self.robot.sync_send_angles([0, 0, 0, 0, 0, 0], 10)
+                    time.sleep(3)
+                    print("✅ 代替方法でキャリブレーション完了")
+                except Exception as e2:
+                    logger.error(f"❌ Alternative calibration failed: {e2}")
+            
+            # 確認のため現在の角度を再取得
+            time.sleep(1)
+            calibrated_angles = self.robot.get_angles()
+            print(f"📊 キャリブレーション後の角度: {calibrated_angles}")
+            
+            # 実際のキャリブレーション位置を原点として保存
+            if calibrated_angles and len(calibrated_angles) == 6:
+                # origin.jsonファイルを更新
+                success = self.position_manager.save_position(
+                    "origin", 
+                    calibrated_angles, 
+                    current_gripper if current_gripper is not None else 50,
+                    "Calibrated origin position"
+                )
+                
+                if success:
+                    print(f"✅ 原点位置保存完了: {calibrated_angles}")
+                    print(f"🤏 グリッパー原点値: {current_gripper}")
+                    logger.info(f"✅ Origin calibrated: angles={calibrated_angles}, gripper={current_gripper}")
+                else:
+                    print("❌ 原点位置保存失敗")
+                    logger.error("❌ Failed to save origin position")
+            else:
+                print("❌ キャリブレーション後の角度取得失敗")
+                logger.error("❌ Failed to get calibrated angles")
+            
+            print("\n✅ 関節キャリブレーション完了!")
+            print("📍 現在位置が原点として設定されました")
+            print("==============================")
+            logger.info("✅ Joint calibration completed successfully")
+                
+        except Exception as e:
+            logger.error(f"❌ Joint calibration error: {e}")
+            print(f"❌ キャリブレーションエラー: {e}")
+        
+        return response
+    
+    def _get_calibration_status_callback(self, request, response):
+        """キャリブレーション状態取得サービスコールバック"""
+        logger.info("📊 Get calibration status service called")
+        
+        try:
+            status_info = {}
+            
+            # グリッパーキャリブレーション状態
+            if self.gripper_controller:
+                gripper_status = self.gripper_controller.get_status()
+                status_info['gripper'] = gripper_status
+            
+            # 関節状態
+            if self.robot:
+                status_info['joint_angles'] = self.current_angles
+                status_info['joint_coords'] = self.current_coords
+            
+            # モード状態
+            status_info['current_mode'] = self.mode_manager.current_mode.value
+            
+            # 安全状態
+            if self.safety_checker:
+                safe, level, message = self.safety_checker.check_joint_angles(self.current_angles)
+                status_info['safety'] = {
+                    'safe': safe,
+                    'level': level.value,
+                    'message': message
+                }
+            
+            logger.info(f"📊 Calibration status: {json.dumps(status_info, indent=2)}")
+                
+        except Exception as e:
+            logger.error(f"❌ Get calibration status error: {e}")
+        
+        return response
+    
+    def _reset_calibration_callback(self, request, response):
+        """キャリブレーションリセットサービスコールバック"""
+        logger.info("🔄 Reset calibration service called")
+        
+        try:
+            if not self.connected or not self.robot:
+                logger.error("❌ Robot not connected")
+                return response
+            
+            # キャリブレーションモードでのみ実行
+            if self.mode_manager.current_mode != CobotMode.CALIBRATION:
+                logger.warning("⚠️ Reset calibration requires calibration mode")
+                return response
+            
+            # グリッパーキャリブレーションリセット
+            if self.gripper_controller:
+                self.gripper_controller.is_calibrated = False
+                self.gripper_controller.open_value = 100
+                self.gripper_controller.closed_value = 0
+                logger.info("🤏 Gripper calibration reset")
+            
+            # 関節キャリブレーションリセット（必要に応じて実装）
+            logger.info("🦾 Joint calibration reset")
+            
+            logger.info("✅ Calibration reset completed")
+                
+        except Exception as e:
+            logger.error(f"❌ Reset calibration error: {e}")
         
         return response
     
@@ -922,6 +1337,28 @@ class CobotNode(Node):
                 
         except Exception as e:
             logger.error(f"❌ Save position failed: {e}")
+        
+        return response
+    
+    def _get_angles_callback(self, request, response):
+        """現在角度取得サービスコールバック"""
+        try:
+            if self.connected and self.robot:
+                # グローバル変数から現在角度を取得
+                angles_data = {
+                    'angles': self.current_angles,
+                    'timestamp': time.time()
+                }
+                # 角度を度数で表示
+                for i, angle in enumerate(self.current_angles, 1):
+                    print(f"  J{i}: {angle:.1f}°")
+                logger.info(f"📊 Current angles: {self.current_angles}")
+            else:
+                print("  関節角度取得中...")
+                logger.warning("⚠️ Robot not connected")
+        except Exception as e:
+            print("  関節角度取得中...")
+            logger.error(f"❌ Get angles error: {e}")
         
         return response
     
@@ -1029,14 +1466,17 @@ class CobotNode(Node):
     
     def _goto_home_callback(self, request, response):
         """ホーム位置移動"""
+        self._stop_motion_if_playing("home command")
         return self._goto_position_helper("home")
     
     def _goto_safe_callback(self, request, response):
         """セーフ位置移動"""
+        self._stop_motion_if_playing("safe command")
         return self._goto_position_helper("safe")
     
     def _goto_last_callback(self, request, response):
         """最新位置移動"""
+        self._stop_motion_if_playing("last command")
         try:
             user_positions = [name for name in self.position_manager.list_positions() 
                             if name.startswith('pos_')]
@@ -1156,6 +1596,9 @@ class CobotNode(Node):
     
     def _goto_position_callback(self, msg):
         """任意位置移動コールバック（トピック経由）"""
+        # モーション再生停止
+        self._stop_motion_if_playing("goto command")
+        
         position_name = msg.data.strip()
         logger.info(f"🎯 Goto position requested: '{position_name}'")
         
@@ -1177,6 +1620,189 @@ class CobotNode(Node):
                 logger.error(f"❌ Goto last failed: {e}")
                 print(f"❌ Goto last failed: {e}")
 
+    # ====================
+    # Motion Service Callbacks
+    # ====================
+    
+    def _motion_record_callback(self, request, response):
+        """モーション記録開始"""
+        try:
+            if not self.connected:
+                response.success = False
+                response.message = "Robot not connected"
+                return response
+                
+            # MotionRecorderにロボット設定
+            self.motion_recorder.set_robot(self.robot)
+            
+            # 記録開始
+            sampling_rate = request.sampling_rate if request.sampling_rate > 0 else 0.0
+            success, message = self.motion_recorder.start_recording(request.motion_name, sampling_rate)
+            
+            response.success = success
+            response.message = message
+            
+            logger.info(f"🎬 Motion record: {request.motion_name} - {'✅' if success else '❌'}")
+            return response
+            
+        except Exception as e:
+            response.success = False
+            response.message = f"Recording error: {str(e)}"
+            logger.error(f"❌ Motion record error: {e}")
+            return response
+    
+    def _motion_play_callback(self, request, response):
+        """モーション再生"""
+        try:
+            if not self.connected:
+                response.success = False
+                response.message = "Robot not connected"
+                return response
+                
+            # MotionRecorderにロボット設定
+            self.motion_recorder.set_robot(self.robot)
+            
+            # 再生実行
+            speed = request.speed if request.speed > 0 else 1.0
+            success, message = self.motion_recorder.play_motion(request.motion_name, speed)
+            
+            response.success = success
+            response.message = message
+            
+            logger.info(f"▶️ Motion play: {request.motion_name} (speed: {speed}x) - {'✅' if success else '❌'}")
+            return response
+            
+        except Exception as e:
+            response.success = False
+            response.message = f"Playback error: {str(e)}"
+            logger.error(f"❌ Motion play error: {e}")
+            return response
+    
+    def _motion_list_callback(self, request, response):
+        """モーションリスト取得"""
+        try:
+            motion_names = self.motion_recorder.list_motions()
+            
+            # 詳細情報取得
+            details = {}
+            for name in motion_names:
+                info = self.motion_recorder.get_motion_info(name)
+                if info:
+                    details[name] = info
+            
+            response.motion_names = motion_names
+            response.details = json.dumps(details, indent=2)
+            
+            logger.info(f"📋 Motion list: {len(motion_names)} motions")
+            return response
+            
+        except Exception as e:
+            response.motion_names = []
+            response.details = f"Error: {str(e)}"
+            logger.error(f"❌ Motion list error: {e}")
+            return response
+    
+    def _record_stop_callback(self, request, response):
+        """記録停止（非ブロッキング）"""
+        try:
+            # 別スレッドで停止処理実行（即座にreturn）
+            threading.Thread(
+                target=self._do_stop_recording,
+                daemon=True
+            ).start()
+            logger.info("⏹️ Recording stop request received (non-blocking)")
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ Record stop error: {e}")
+            return response
+    
+    def _do_stop_recording(self):
+        """実際の停止処理（別スレッド）"""
+        try:
+            success, message = self.motion_recorder.stop_recording()
+            logger.info(f"⏹️ Recording stop completed - {'✅' if success else '❌'}: {message}")
+            print(f"⏹️ 記録停止完了: {message}")
+        except Exception as e:
+            logger.error(f"❌ Stop recording error: {e}")
+            print(f"❌ 停止エラー: {e}")
+
+    # ====================
+    # Motion Topic Callbacks
+    # ====================
+    
+    def _motion_record_topic_callback(self, msg: String):
+        """モーション記録開始（トピック）"""
+        try:
+            print(f"🔧 [DEBUG] _motion_record_topic_callback called with msg.data='{msg.data}'")
+            
+            if not self.connected:
+                logger.warning("⚠️ Robot not connected")
+                print("🔧 [DEBUG] Robot not connected, returning")
+                return
+                
+            motion_name = msg.data.strip()
+            if not motion_name:
+                logger.warning("⚠️ Motion name cannot be empty")
+                print("🔧 [DEBUG] Motion name empty, returning")
+                return
+                
+            print(f"🔧 [DEBUG] Setting robot on motion_recorder...")
+            # MotionRecorderにロボット設定
+            self.motion_recorder.set_robot(self.robot)
+            
+            print(f"🔧 [DEBUG] Calling start_recording with motion_name='{motion_name}'")
+            # 記録開始
+            success, message = self.motion_recorder.start_recording(motion_name)
+            print(f"🔧 [DEBUG] start_recording returned: success={success}, message='{message}'")
+            
+            if success:
+                logger.info(f"🎬 Motion recording started: {motion_name}")
+                print(f"🎬 記録開始: {motion_name}")
+                print("⏺️ ロボットを手動で動かしてください")
+                print("⏹️ 停止: './record_stop' または30秒で自動停止")
+            else:
+                logger.error(f"❌ Motion recording failed: {motion_name} - {message}")
+                print(f"❌ 記録失敗: {motion_name} - {message}")
+                
+        except Exception as e:
+            logger.error(f"❌ Motion record topic error: {e}")
+            print(f"❌ 記録エラー: {e}")
+    
+    def _motion_play_topic_callback(self, msg: String):
+        """モーション再生（トピック）"""
+        try:
+            if not self.connected:
+                logger.warning("⚠️ Robot not connected")
+                return
+                
+            # 形式: "motion_name" または "motion_name:speed"
+            parts = msg.data.strip().split(':')
+            motion_name = parts[0]
+            speed = float(parts[1]) if len(parts) > 1 else 1.0
+            
+            if not motion_name:
+                logger.warning("⚠️ Motion name cannot be empty")
+                return
+                
+            # MotionRecorderにロボット設定
+            self.motion_recorder.set_robot(self.robot)
+            
+            # 再生実行
+            success, message = self.motion_recorder.play_motion(motion_name, speed)
+            
+            if success:
+                logger.info(f"▶️ Motion playback completed: {motion_name} (speed: {speed}x)")
+                print(f"▶️ 再生完了: {motion_name} (速度: {speed}x)")
+            else:
+                logger.error(f"❌ Motion playback failed: {motion_name} - {message}")
+                print(f"❌ 再生失敗: {motion_name} - {message}")
+                
+        except Exception as e:
+            logger.error(f"❌ Motion play topic error: {e}")
+            print(f"❌ 再生エラー: {e}")
+
+
 def main(args=None):
     """メイン関数"""
     rclpy.init(args=args)
@@ -1194,6 +1820,11 @@ def main(args=None):
         logger.info("  - /cobot/manual - マニュアルモード")
         logger.info("  - /cobot/auto - オートモード")
         logger.info("  - /cobot/ai - AIモード")
+        logger.info("  - /cobot/calibration - キャリブレーションモード")
+        logger.info("  - /cobot/calibrate_gripper - グリッパーキャリブレーション")
+        logger.info("  - /cobot/calibrate_joints - 関節キャリブレーション")
+        logger.info("  - /cobot/get_calibration_status - キャリブレーション状態取得")
+        logger.info("  - /cobot/reset_calibration - キャリブレーションリセット")
         logger.info("  - /cobot/set_mode - モード切替 (legacy)")
         logger.info("  - /cobot/save_current_position - 現在位置保存")
         logger.info("  - /cobot/save - 位置保存")

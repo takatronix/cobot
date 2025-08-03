@@ -1,13 +1,25 @@
 #!/bin/bash
-# 位置リスト表示（静かなバージョン）
+# 位置リスト表示（コンパクト形式）
+
 echo "📋 保存済み位置一覧:"
 
-# 一時ファイルに出力を保存
-temp_file="/tmp/cobot_list_output"
-ros2 service call /cobot/list std_srvs/srv/Empty > "$temp_file" 2>&1
-
-# 位置情報のみ抽出して表示
-grep -A 10 "📋 保存済み位置" "$temp_file" | grep -E "  - |📋 保存済み位置 \([0-9]+件\):" | grep -v "requester\|response"
-
-# 一時ファイル削除
-rm -f "$temp_file"
+# positionsディレクトリの全JSONファイルを読み取り
+for json_file in /home/ros2/cobot/positions/*.json; do
+    if [ -f "$json_file" ]; then
+        name=$(basename "$json_file" .json)
+        
+        # JSONからanglesとgripper_valueを抽出
+        if command -v jq > /dev/null 2>&1; then
+            # jqがある場合
+            angles=$(jq -r '.angles | @csv' "$json_file" 2>/dev/null | tr -d '"')
+            gripper=$(jq -r '.gripper_value' "$json_file" 2>/dev/null)
+        else
+            # jqがない場合はgrepで抽出
+            angles=$(grep -A 10 '"angles"' "$json_file" | grep -E '^\s*-?[0-9]' | sed 's/[^-0-9.]//g' | tr '\n' ',' | sed 's/,$//')
+            gripper=$(grep '"gripper_value"' "$json_file" | sed 's/.*: *\([0-9]*\).*/\1/')
+        fi
+        
+        # コンパクト形式で表示: [j1,j2,j3,j4,j5,j6] g:xxx
+        printf "%-8s [%s] g:%s\n" "$name:" "$angles" "$gripper"
+    fi
+done

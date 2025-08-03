@@ -1,0 +1,6 @@
+# Motion recording service
+string motion_name
+float32 sampling_rate    # Optional, 0.0 for default (20Hz)
+---
+bool success
+string message

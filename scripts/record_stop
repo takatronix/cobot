@@ -1,0 +1,4 @@
+#!/bin/bash
+# ⏹️ Recording stop
+echo "⏹️ 記録停止"
+ros2 service call /cobot/record_stop std_srvs/srv/Empty

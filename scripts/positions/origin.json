@@ -1,0 +1,14 @@
+{
+  "name": "origin",
+  "angles": [
+    0.0,
+    0.0,
+    0.0,
+    -0.96,
+    4.74,
+    0.0
+  ],
+  "description": "Calibrated origin position",
+  "gripper_value": 92,
+  "created_at": "Mon Aug  4 07:27:07 2025"
+}

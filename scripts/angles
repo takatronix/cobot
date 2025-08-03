@@ -1,0 +1,12 @@
+#!/bin/bash
+# 現在角度表示コマンド
+
+echo "📊 現在の関節角度:"
+
+# ROS2サービスを呼び出して、cobot_nodeのログから角度を取得
+ros2 service call /cobot/get_angles std_srvs/srv/Empty "{}" >/dev/null 2>&1
+
+# 少し待ってからログを確認（角度表示を待つ）
+sleep 0.5
+
+echo "✅ 角度取得完了"

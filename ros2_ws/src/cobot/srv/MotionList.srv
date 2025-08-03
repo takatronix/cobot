@@ -1,0 +1,4 @@
+# Motion list service
+---
+string[] motion_names
+string details    # JSON format with motion info
