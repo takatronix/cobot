@@ -1,69 +1,135 @@
 #!/bin/bash
-# cobot 自動キャリブレーションスクリプト
+# MyCobot280 キャリブレーションスクリプト
 # 使用方法: ./calibrate
 
-echo "🎯 cobotキャリブレーション開始..."
+echo "🎯 MyCobot280 ゼロポイントキャリブレーション開始..."
 
-# ROS2ノード確認
-if ! ros2 node list 2>/dev/null | grep -q "cobot_node"; then
-    echo "❌ cobotノードが起動していません"
-    echo "   先に 'ros2 launch cobot cobot.launch.py' を実行してください"
-    exit 1
+# ROS2ノード確認と停止
+if ros2 node list 2>/dev/null | grep -q "cobot_node"; then
+    echo "⚠️  cobotノードが起動しています"
+    echo "   キャリブレーション中は停止する必要があります"
+    echo "   停止しますか？ (y/n)"
+    read -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "🛑 cobotノードを停止中..."
+        ~/cobot/cobot_stop
+        sleep 2
+    else
+        echo "❌ キャリブレーションを中止しました"
+        exit 1
+    fi
 fi
 
-# マニュアルモードに切り替え
-echo "🔧 マニュアルモードに切り替え中..."
-ros2 service call /cobot/manual std_srvs/srv/Empty > /dev/null 2>&1
-if [ $? -ne 0 ]; then
-    echo "❌ マニュアルモード切り替え失敗"
-    exit 1
+# ノードが停止している場合はマニュアルモード切り替えをスキップ
+if ros2 node list 2>/dev/null | grep -q "cobot_node"; then
+    echo "🔧 マニュアルモードに切り替え中..."
+    ros2 service call /cobot/manual std_srvs/srv/Empty > /dev/null 2>&1
+    sleep 1
 fi
 
-sleep 1
-
-echo "✋ マニュアルモード準備完了"
-echo "🔘 ボタンを押しながらロボットを理想的な原点位置に動かしてください"
-echo "🤏 グリッパーを最大に開いてください"
-echo "📍 ボタンを押している間だけロボットが柔らかくなります"
+echo ""
+echo "📍 手順："
+echo "   1. ロボット本体のボタンを押しながら動かしてください"
+echo "   2. グリッパーを最大に開いてください"
+echo "   3. 各関節のゼロ位置マーク（刻み線）を揃えてください"
 echo ""
 
 # 15秒カウントダウン
 for i in {15..1}; do
-    printf "\r⏰ カウントダウン: %2d秒 (位置を調整してください...)" $i
+    printf "\r⏰ 残り時間: %2d秒 " $i
     sleep 1
 done
 
-printf "\r⏰ カウントダウン完了！                                    \n"
-echo "💾 現在位置を原点として記憶中..."
 echo ""
+echo "💾 現在位置を原点として登録中..."
 
-# 現在の関節角度を取得して表示
-echo "📊 設定された原点位置:"
-echo "  🦾 6軸関節角度:"
-ros2 topic echo /cobot/joint_states sensor_msgs/msg/JointState -1 2>/dev/null | grep -A 6 "position:" | tail -6 | while read -r line; do
-    if [[ $line =~ ^-?[0-9]+\.[0-9]+ ]]; then
-        joint_num=$((joint_num + 1))
-        angle=$(echo "$line * 180 / 3.14159" | bc -l 2>/dev/null || echo "$line")
-        printf "    Joint %d: %.2f°\n" $joint_num "$angle" 2>/dev/null || echo "    $line"
-    fi
-done
-echo "  🤏 グリッパー位置: 最大開き"
-echo ""
+# Python経由でグリッパー状態記録とキャリブレーション
+python3 -c "
+from pymycobot import MyCobot280
+import time
+import sys
+import serial
 
-# 現在位置を原点として保存
-ros2 service call /cobot/calibrate_joints std_srvs/srv/Empty > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    echo "✅ 6軸関節の原点設定完了"
-else
-    echo "❌ 関節原点設定失敗"
-fi
+robot = None
+try:
+    robot = MyCobot280('/dev/ttyAMA0', 1000000)
+    time.sleep(2)  # 接続安定化のため待機時間を増やす
+    
+    # 1. グリッパーのキャリブレーション
+    print('🤏 グリッパーキャリブレーション実行中...')
+    try:
+        # グリッパー専用のキャリブレーションメソッドを使用
+        robot.set_gripper_calibration()
+        time.sleep(1)
+        print('   グリッパーキャリブレーション完了（現在位置を0点に設定）')
+    except serial.SerialException as e:
+        print(f'   ⚠️  グリッパーキャリブレーションスキップ（シリアル通信エラー）')
+    except Exception as e:
+        print(f'   ⚠️  グリッパーキャリブレーションスキップ（{type(e).__name__}）')
+    
+    # 2. 各関節をキャリブレーション
+    print('🔧 関節キャリブレーション実行中...')
+    for servo_id in range(1, 7):
+        try:
+            print(f'   サーボ {servo_id} キャリブレーション')
+            robot.set_servo_calibration(servo_id)
+            time.sleep(1)  # 各サーボ間の待機時間を増やす
+        except serial.SerialException as e:
+            print(f'   ❌ サーボ {servo_id} キャリブレーション失敗（シリアル通信エラー）')
+            print('      シリアルポートが他のプロセスで使用されている可能性があります')
+            sys.exit(1)
+        except Exception as e:
+            print(f'   ❌ サーボ {servo_id} キャリブレーション失敗（{type(e).__name__}）')
+            sys.exit(1)
+    
+    print('✅ キャリブレーション完了')
+    
+    # 3. キャリブレーション後の位置（全て0）をoriginとして保存
+    print('💾 原点位置を保存中...')
+    import json
+    import os
+    
+    # キャリブレーション後は全ての角度が0、グリッパーは現在値（最大開き=100想定）
+    # 念のため現在のグリッパー値を取得
+    try:
+        current_gripper = robot.get_gripper_value()
+        if current_gripper is None:
+            current_gripper = 100  # デフォルト値
+    except:
+        current_gripper = 100
+    
+    origin_data = {
+        'name': 'origin',
+        'angles': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        'description': 'Calibrated origin position',
+        'gripper_value': current_gripper,  # キャリブレーション後の実際の値
+        'created_at': time.ctime()
+    }
+    
+    # positions/origin.jsonとして保存
+    positions_dir = os.path.expanduser('~/cobot/positions')
+    os.makedirs(positions_dir, exist_ok=True)
+    with open(os.path.join(positions_dir, 'origin.json'), 'w') as f:
+        json.dump(origin_data, f, indent=2)
+    
+    print('✅ 原点位置を origin として保存しました')
 
-# グリッパー原点設定
-ros2 service call /cobot/calibrate_gripper std_srvs/srv/Empty > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    echo "✅ グリッパー原点設定完了"
-else
-    echo "❌ グリッパー原点設定失敗"
-fi
+except serial.SerialException as e:
+    print(f'❌ シリアルポート接続エラー: {e}')
+    print('   他のプロセスがポートを使用している可能性があります')
+    sys.exit(1)
+except Exception as e:
+    print(f'❌ エラーが発生しました: {type(e).__name__}: {e}')
+    sys.exit(1)
+finally:
+    # クリーンアップ
+    if robot is not None:
+        try:
+            robot.__del__()  # シリアルポートを解放
+        except:
+            pass
+"
 
-echo "🎯 キャリブレーション完了！原点が設定されました"
+echo "🎯 完了！"
+echo "✅ キャリブレーション完了"

@@ -1,0 +1,12 @@
+#!/bin/bash
+echo "⏹️ モーション再生停止..."
+
+# サービス経由で再生停止
+echo "🔧 [DEBUG] サービス呼び出し中..."
+timeout 5 ros2 service call /cobot/stop std_srvs/srv/Empty
+
+if [ $? -eq 0 ]; then
+    echo "✅ 再生停止コマンド送信"
+else
+    echo "❗ コマンド送信失敗"
+fi

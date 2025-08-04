@@ -1,0 +1,9 @@
+#!/bin/bash
+echo "🤏 グリッパー閉じる..."
+# トピック経由でグリッパー制御
+ros2 topic pub --once /cobot/gripper_command std_msgs/msg/String "data: 'close'" > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "✅ グリッパー閉鎖コマンド送信"
+else
+    echo "❌ コマンド送信失敗"
+fi

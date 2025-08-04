@@ -1,0 +1,6 @@
+# Gripper control service
+int32 value     # Gripper value (0-100: 0=closed, 100=open)
+int32 speed     # Speed (0-100)
+---
+bool success
+string message

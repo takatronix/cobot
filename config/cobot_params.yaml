@@ -1,0 +1,41 @@
+# cobot280 Parameters Configuration
+# ================================
+
+cobot_node:
+  ros__parameters:
+    # ハードウェア設定
+    port: "/dev/ttyAMA0"
+    baudrate: 1000000
+    
+    # 制御設定  
+    publish_rate: 10.0          # 状態配信レート (Hz)
+    enable_safety: true         # 安全機能有効
+    auto_startup: true          # 自動起動
+    
+    # 安全設定
+    emergency_timeout: 5.0      # 緊急停止タイムアウト (秒)
+    motion_timeout: 30.0        # 動作タイムアウト (秒)
+    angle_tolerance: 2.0        # 角度許容誤差 (度)
+    position_tolerance: 5.0     # 位置許容誤差 (mm)
+    
+    # 速度制限
+    max_joint_velocity: 100     # 最大関節速度 (度/秒)
+    max_linear_velocity: 50     # 最大直線速度 (mm/秒)
+    max_angular_velocity: 30    # 最大角速度 (度/秒)
+    
+    # グリッパー設定
+    gripper_timeout: 5.0        # グリッパータイムアウト (秒)
+    gripper_protection_current: 300  # 保護電流 (mA)
+    
+    # モード設定
+    startup_mode: "auto"        # 起動時モード
+    safe_mode_on_error: true    # エラー時安全モード
+    
+    # LED設定
+    led_brightness: 255         # LED明度
+    status_led_enabled: true    # 状態LED有効
+    
+    # ログ設定
+    log_level: "INFO"           # ログレベル
+    log_robot_state: false      # ロボット状態ログ
+    log_command_history: true   # コマンド履歴ログ
