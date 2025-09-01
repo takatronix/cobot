@@ -1,0 +1,33 @@
+#!/bin/bash
+# cobot_node安全起動スクリプト
+
+echo "🚀 cobot_node起動中..."
+
+# 既存のcobot_nodeプロセスを確認・停止
+if pgrep -f "cobot_node" > /dev/null; then
+    echo "⚠️ 既存のcobot_nodeを停止中..."
+    pkill -f cobot_node
+    sleep 3
+    
+    # 強制停止が必要な場合
+    if pgrep -f "cobot_node" > /dev/null; then
+        echo "🔥 強制停止実行中..."
+        pkill -9 -f cobot_node
+        sleep 2
+    fi
+fi
+
+# ポートの使用状況確認
+if lsof /dev/ttyAMA0 2>/dev/null; then
+    echo "⚠️ /dev/ttyAMA0が使用中です。プロセスを確認してください。"
+    lsof /dev/ttyAMA0
+    echo "5秒後に起動を試行します..."
+    sleep 5
+fi
+
+# ROS2環境設定
+source /home/ros2/ros2_ws/install/setup.bash
+
+# cobot_node起動
+echo "✅ cobot_node起動..."
+ros2 run cobot cobot_node

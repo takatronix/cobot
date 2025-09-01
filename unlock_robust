@@ -1,0 +1,48 @@
+#!/bin/bash
+echo "🔓 堅牢サーボロック解除..."
+
+python3 -c "
+import sys
+import time
+sys.path.append('/home/ros2/ros2_ws/src/cobot')
+
+def safe_robot_command(robot, command_name, command_func, *args):
+    '''安全なロボットコマンド実行'''
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            result = command_func(*args)
+            print(f'✅ {command_name} 成功 (試行 {attempt + 1}): {result}')
+            return result
+        except Exception as e:
+            print(f'⚠️ {command_name} 失敗 (試行 {attempt + 1}): {e}')
+            if attempt < max_retries - 1:
+                time.sleep(1)
+            else:
+                print(f'❌ {command_name} 最終失敗')
+                return None
+
+try:
+    from pymycobot import MyCobot280
+    print('🤖 ロボット接続中...')
+    robot = MyCobot280('/dev/ttyAMA0', 1000000)
+    time.sleep(2)  # 十分な接続待機
+    
+    # ティーチングモード状態確認（リトライ付き）
+    is_free = safe_robot_command(robot, 'ティーチングモード確認', robot.is_free_mode)
+    
+    if is_free:
+        print('🔄 ティーチングモード解除中...')
+        safe_robot_command(robot, 'ティーチングモード解除', robot.set_free_mode, 0)
+        time.sleep(2)  # モード切り替え待機
+    
+    # サーボロック解除（リトライ付き）
+    safe_robot_command(robot, 'サーボロック解除', robot.release_all_servos)
+    
+    print('🎉 全処理完了')
+    
+except Exception as e:
+    print(f'💥 致命的エラー: {e}')
+"
+
+echo "✅ 完了"

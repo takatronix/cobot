@@ -1,0 +1,57 @@
+#!/bin/bash
+# 位置移動コマンド（数値表示付き）
+
+if [ -z "$1" ]; then
+    TARGET="最新位置"
+    POSITION_NAME="origin"
+else
+    TARGET="$1"
+    POSITION_NAME="$1"
+    
+    # 位置ファイルの存在確認
+    if [ ! -f "positions/$POSITION_NAME.json" ]; then
+        echo "❌ エラー: 位置 '$POSITION_NAME' が見つかりません"
+        echo "💡 利用可能な位置を確認: ./list"
+        exit 1
+    fi
+fi
+
+echo "🎯 $TARGET へ移動中..."
+
+# 移動前の現在位置を表示
+echo "📍 現在位置:"
+echo "  ℹ️ リアルタイム角度はcobot_nodeターミナルで確認"
+
+# 移動実行
+if [ -z "$POSITION_NAME" ]; then
+    ros2 topic pub --once /cobot/goto_position std_msgs/msg/String "{data: \"\"}" > /dev/null 2>&1
+else
+    ros2 topic pub --once /cobot/goto_position std_msgs/msg/String "{data: \"$POSITION_NAME\"}" > /dev/null 2>&1
+fi
+
+# 移動完了を待つ
+sleep 2
+
+echo "🎯 移動完了後の位置 (目標):"
+if [ -n "$POSITION_NAME" ] && [ -f "positions/$POSITION_NAME.json" ]; then
+    python3 -c "
+import json
+try:
+    with open('positions/$POSITION_NAME.json', 'r') as f:
+        data = json.load(f)
+        angles = data['angles']
+        for i, angle in enumerate(angles, 1):
+            print(f'  J{i}: {angle:.1f}°')
+        # グリッパー値も表示
+        if 'gripper_value' in data and data['gripper_value'] is not None:
+            print(f'  🤏 グリッパー: {data[\"gripper_value\"]}% (開度)')
+        else:
+            print('  🤏 グリッパー: 情報なし')
+except:
+    print('  角度情報取得中...')
+" 2>/dev/null
+else
+    echo "  位置ファイルが見つかりません"
+fi
+
+echo "✅ 完了"

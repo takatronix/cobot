@@ -1,0 +1,91 @@
+#!/bin/bash
+# cobot パッケージ完全リビルド・インストールスクリプト
+# 使用方法: ./rebuild [オプション]
+# オプション:
+#   clean    - 完全クリーンビルド
+#   fast     - 高速ビルド（並列処理）
+#   verbose  - 詳細ログ出力
+
+echo "🔨 cobotパッケージ完全リビルド開始..."
+
+# オプション解析
+CLEAN_BUILD=false
+FAST_BUILD=false
+VERBOSE=false
+
+for arg in "$@"; do
+    case $arg in
+        clean)
+            CLEAN_BUILD=true
+            echo "🧹 クリーンビルドモード有効"
+            ;;
+        fast)
+            FAST_BUILD=true
+            echo "⚡ 高速ビルドモード有効"
+            ;;
+        verbose)
+            VERBOSE=true
+            echo "📝 詳細ログモード有効"
+            ;;
+    esac
+done
+
+# ワークスペースディレクトリに移動
+cd /home/ros2/ros2_ws
+
+# クリーンビルドの場合
+if [ "$CLEAN_BUILD" = true ]; then
+    echo "🧹 完全クリーンアップ実行中..."
+    rm -rf build/ install/ log/
+    echo "✅ クリーンアップ完了"
+fi
+
+# ビルドコマンド構築
+BUILD_CMD="colcon build --packages-select cobot"
+
+if [ "$FAST_BUILD" = true ]; then
+    BUILD_CMD="$BUILD_CMD --parallel-workers $(nproc)"
+fi
+
+if [ "$VERBOSE" = true ]; then
+    BUILD_CMD="$BUILD_CMD --event-handlers console_direct+"
+fi
+
+# ビルド実行
+echo "🔧 ビルドコマンド: $BUILD_CMD"
+echo "🔧 ビルド実行中..."
+
+eval $BUILD_CMD
+
+# ビルド結果チェック
+if [ $? -eq 0 ]; then
+    echo "✅ ビルド完了"
+    
+    # インストール環境を更新
+    echo "📦 インストール環境更新中..."
+    source install/setup.bash
+    
+    # 現在のターミナルでも環境変数を更新
+    export ROS_PACKAGE_PATH="/home/ros2/ros2_ws/install/cobot/share:$ROS_PACKAGE_PATH"
+    
+    echo "✅ cobotパッケージの完全リビルド・インストール完了！"
+    echo ""
+    echo "📋 ビルド情報:"
+    echo "  パッケージ: cobot"
+    echo "  ワークスペース: /home/ros2/ros2_ws"
+    echo "  インストール先: /home/ros2/ros2_ws/install/cobot"
+    echo ""
+    echo "🚀 次のステップ:"
+    echo "  ./cobot_start  - cobotノード起動"
+    echo "  ./status       - ステータス確認"
+    echo "  ./calibrate    - キャリブレーション実行"
+    echo ""
+    echo "💡 ヒント:"
+    echo "  新しいターミナルを開く場合は以下を実行:"
+    echo "  cd /home/ros2/ros2_ws && source install/setup.bash"
+    echo ""
+else
+    echo "❌ ビルド失敗"
+    echo "🔍 ログを確認してください: log/latest_build/cobot/"
+    exit 1
+fi

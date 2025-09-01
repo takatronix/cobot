@@ -1,0 +1,8 @@
+#!/bin/bash
+echo "🟡 マニュアルモードに切り替え..."
+ros2 service call /cobot/manual std_srvs/srv/Empty > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "✅ 完了"
+else
+    echo "❌ 切り替え失敗"
+fi

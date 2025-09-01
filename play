@@ -1,0 +1,18 @@
+#!/bin/bash
+# ▶️ Motion playback (simple)
+if [ -z "$1" ]; then
+    echo "使用法: ./play <motion_name> [speed]"
+    echo "例: ./play pick_up"
+    echo "例: ./play pick_up 0.5    # ゆっくり"
+    echo "例: ./play pick_up 2.0    # 高速"
+    exit 1
+fi
+
+if [ -n "$2" ]; then
+    DATA="$1:$2"
+else
+    DATA="$1"
+fi
+
+echo "▶️ 再生: $DATA"
+ros2 topic pub --once /cobot/play std_msgs/msg/String "data: '$DATA'" > /dev/null

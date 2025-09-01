@@ -1,0 +1,11 @@
+#!/bin/bash
+echo "🔓 サーボロック解除（サービス経由）..."
+
+# サーボロック解除サービス呼び出し
+ros2 service call /cobot/unlock_servos std_srvs/srv/Empty
+
+if [ $? -eq 0 ]; then
+    echo "✅ サーボロック解除完了"
+else
+    echo "❗ サーボロック解除失敗"
+fi

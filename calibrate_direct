@@ -1,0 +1,106 @@
+#!/bin/bash
+# MyCobot280 直接キャリブレーションスクリプト
+# ROS2ノードを使わずに直接キャリブレーション
+
+echo "🎯 MyCobot280 ゼロポイントキャリブレーション開始..."
+
+# cobot_nodeが動いていないことを確認
+if pgrep -f "cobot_node" > /dev/null; then
+    echo "⚠️  cobotノードが起動しています"
+    echo "   先に ./cobot_stop で停止してください"
+    exit 1
+fi
+
+echo ""
+echo "📍 手順："
+echo "   1. ロボット本体のボタンを押しながら動かしてください"
+echo "   2. グリッパーを最大に開いてください"
+echo "   3. 各関節のゼロ位置マーク（刻み線）を揃えてください"
+echo ""
+
+# 15秒カウントダウン
+for i in {15..1}; do
+    printf "\r⏰ 残り時間: %2d秒 " $i
+    sleep 1
+done
+
+echo ""
+echo "💾 キャリブレーション実行中..."
+
+# Python経由で直接キャリブレーション
+python3 << 'EOF'
+from pymycobot import MyCobot280
+import time
+import sys
+import json
+import os
+
+print("🔌 ロボットに接続中...")
+try:
+    robot = MyCobot280('/dev/ttyAMA0', 1000000)
+    time.sleep(3)  # 接続待機
+    
+    # マニュアルモード（フリームーブ）に設定
+    print("🔧 マニュアルモードに設定...")
+    robot.release_all_servos()
+    time.sleep(1)
+    
+    # 各関節を順番にキャリブレーション
+    print("🔧 関節キャリブレーション実行中...")
+    success_count = 0
+    for servo_id in range(1, 7):
+        print(f"   サーボ {servo_id} キャリブレーション...", end='', flush=True)
+        try:
+            robot.set_servo_calibration(servo_id)
+            time.sleep(1.5)  # 各サーボの処理待ち
+            print(" ✓")
+            success_count += 1
+        except Exception as e:
+            print(f" ✗ ({type(e).__name__})")
+    
+    if success_count == 6:
+        print("✅ 全関節のキャリブレーション完了")
+    else:
+        print(f"⚠️  {success_count}/6 関節のキャリブレーションが完了")
+    
+    # グリッパーキャリブレーション（オプション）
+    print("🤏 グリッパーキャリブレーション...", end='', flush=True)
+    try:
+        robot.set_gripper_calibration()
+        time.sleep(1)
+        print(" ✓")
+    except:
+        print(" ✗ (スキップ)")
+    
+    # 原点位置を保存
+    print("\n💾 原点位置を保存中...")
+    origin_data = {
+        'name': 'origin',
+        'angles': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        'description': 'Calibrated origin position',
+        'gripper_value': 100,  # 最大開き状態
+        'created_at': time.ctime()
+    }
+    
+    positions_dir = os.path.expanduser('~/cobot/positions')
+    os.makedirs(positions_dir, exist_ok=True)
+    with open(os.path.join(positions_dir, 'origin.json'), 'w') as f:
+        json.dump(origin_data, f, indent=2)
+    
+    print("✅ 原点位置を 'origin' として保存しました")
+    
+    # ロボットをロック（安全のため）
+    print("🔒 ロボットをロック中...")
+    robot.lock_all_servos()
+    
+except Exception as e:
+    print(f"\n❌ エラー: {type(e).__name__}: {e}")
+    print("   シリアルポートの接続を確認してください")
+    sys.exit(1)
+finally:
+    print("\n🎯 キャリブレーション処理終了")
+EOF
+
+echo ""
+echo "✅ キャリブレーション完了！"
+echo "   ./home コマンドで原点位置に移動できます"

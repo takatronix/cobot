@@ -1,0 +1,14 @@
+{
+  "name": "sleep",
+  "angles": [
+    -18.45,
+    127.61,
+    -135,
+    101.51,
+    145,
+    15.99
+  ],
+  "description": "",
+  "gripper_value": 3,
+  "created_at": "Tue Aug  5 04:18:20 2025"
+}

@@ -1,0 +1,112 @@
+#!/bin/bash
+# MyCobot280 グリッパー専用キャリブレーションスクリプト
+# 使用方法: ./calibrate_gripper
+
+echo "🤏 MyCobot280 グリッパーキャリブレーション開始..."
+
+# ROS2ノード確認と停止
+if ros2 node list 2>/dev/null | grep -q "cobot_node"; then
+    echo "⚠️  cobotノードが起動しています"
+    echo "   キャリブレーション中は停止する必要があります"
+    echo "   停止しますか？ (y/n)"
+    read -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "🛑 cobotノードを停止中..."
+        ~/cobot/cobot_stop
+        sleep 2
+    else
+        echo "❌ キャリブレーションを中止しました"
+        exit 1
+    fi
+fi
+
+echo ""
+echo "📍 手順："
+echo "   1. グリッパーを最大に開いてください"
+echo "   2. 準備ができたらEnterキーを押してください"
+echo ""
+
+read -p "準備ができたらEnterキーを押してください..."
+
+echo "💾 グリッパーの現在位置を原点として登録中..."
+
+# Python経由でグリッパーのみキャリブレーション
+python3 -c "
+from pymycobot import MyCobot280
+import time
+import sys
+import serial
+import json
+import os
+
+robot = None
+try:
+    robot = MyCobot280('/dev/ttyAMA0', 1000000)
+    time.sleep(2)  # 接続安定化のため待機
+    
+    # グリッパーのキャリブレーション
+    print('🤏 グリッパーキャリブレーション実行中...')
+    try:
+        # グリッパー専用のキャリブレーションメソッドを使用
+        robot.set_gripper_calibration()
+        time.sleep(1)
+        print('✅ グリッパーキャリブレーション完了（現在位置を0点に設定）')
+        
+        # キャリブレーション後のグリッパー値を確認
+        time.sleep(1)
+        current_gripper = robot.get_gripper_value()
+        if current_gripper is not None:
+            print(f'📊 現在のグリッパー値: {current_gripper}')
+        
+    except serial.SerialException as e:
+        print(f'❌ シリアル通信エラー: {e}')
+        sys.exit(1)
+    except Exception as e:
+        print(f'❌ グリッパーキャリブレーション失敗: {type(e).__name__}: {e}')
+        sys.exit(1)
+    
+    # グリッパーキャリブレーション情報を保存
+    print('💾 キャリブレーション情報を保存中...')
+    
+    calibration_data = {
+        'type': 'gripper_calibration',
+        'calibrated_at': time.ctime(),
+        'note': 'Gripper calibrated to fully open position as zero point'
+    }
+    
+    # calibration_logディレクトリに保存
+    log_dir = os.path.expanduser('~/cobot/calibration_log')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # タイムスタンプ付きファイル名
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(log_dir, f'gripper_calibration_{timestamp}.json')
+    
+    with open(log_file, 'w') as f:
+        json.dump(calibration_data, f, indent=2)
+    
+    print(f'✅ キャリブレーション情報を保存しました: {log_file}')
+
+except serial.SerialException as e:
+    print(f'❌ シリアルポート接続エラー: {e}')
+    print('   他のプロセスがポートを使用している可能性があります')
+    sys.exit(1)
+except Exception as e:
+    print(f'❌ エラーが発生しました: {type(e).__name__}: {e}')
+    sys.exit(1)
+finally:
+    # クリーンアップ
+    if robot is not None:
+        try:
+            robot.__del__()  # シリアルポートを解放
+        except:
+            pass
+"
+
+echo "🎯 グリッパーキャリブレーション完了！"
+echo ""
+echo "📌 備考:"
+echo "   - グリッパーの最大開き位置が0点として設定されました"
+echo "   - グリッパーを閉じる際は正の値を指定してください"
+echo "   - 完全に閉じた状態は通常70-100の値になります"

@@ -1,0 +1,14 @@
+{
+  "name": "forward",
+  "angles": [
+    11.77,
+    -49.04,
+    -14.85,
+    62.31,
+    -12.91,
+    -41.04
+  ],
+  "description": "",
+  "gripper_value": 45,
+  "created_at": "Mon Aug  4 07:30:19 2025"
+}

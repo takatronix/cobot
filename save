@@ -1,0 +1,33 @@
+#!/bin/bash
+# 位置保存コマンド - save [position_name]
+# 引数なし: タイムスタンプ名で保存
+# 引数あり: 指定名で保存
+
+POSITION_NAME="$1"
+
+if [ -z "$POSITION_NAME" ]; then
+    echo "💾 現在位置を保存中..."
+    # 引数なしの場合は従来のサービス経由（タイムスタンプ名）
+    ros2 service call /cobot/save std_srvs/srv/Empty > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo "💾 位置保存完了"
+    else
+        echo "❌ 保存失敗"
+    fi
+else
+    echo "💾 位置 \"$POSITION_NAME\" を保存中..."
+    
+    # 引数ありの場合は新しいトピック経由（名前付き保存）
+    ros2 topic pub --once /cobot/save_position std_msgs/msg/String "data: '$POSITION_NAME'" > /dev/null 2>&1
+    
+    # トピック送信は成功しても実際の保存は非同期なので、
+    # しばらく待ってからエラーログをチェック
+    sleep 1
+    
+    # 最近のエラーログをチェック（最後5行を確認）
+    if journalctl --no-pager -n 5 2>/dev/null | grep -q "❌.*Save position.*error\|❌.*Robot not connected" 2>/dev/null; then
+        echo "❌ 保存失敗"
+    else
+        echo "💾 位置保存完了"
+    fi
+fi

@@ -1,14 +1,14 @@
 {
-  "name": "home_corrected",
+  "name": "home",
   "angles": [
-    -48.77,
-    135,
+    -32.25,
+    130.42,
     -135,
-    -12.39,
-    61.87,
-    -62.75
+    -11.16,
+    36.65,
+    -50.8
   ],
   "description": "",
-  "gripper_value": 38,
-  "created_at": "Sat Aug  2 16:59:53 2025"
+  "gripper_value": 49,
+  "created_at": "Wed Aug  6 05:35:48 2025"
 }
